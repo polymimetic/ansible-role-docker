@@ -1,0 +1,152 @@
+---
+# tasks file for docker
+
+# Docker prerequisites
+- name: Ensure old versions of Docker are not installed
+  package:
+    name: "{{ item }}"
+    state: absent
+  with_items:
+    - docker
+    - docker-engine
+
+- name: Ensure depdencies are installed
+  apt:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - apt-transport-https
+    - ca-certificates
+
+# Add Docker repository
+- name: Add Docker apt key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    id: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+    state: present
+  register: docker_add_repository_key
+  ignore_errors: true
+
+- name: Ensure curl is present (on older systems without SNI)
+  package:
+    name: curl
+    state: present
+  when: docker_add_repository_key|failed
+
+- name: Add Docker apt key (alternative for older systems without SNI)
+  shell: "curl -sSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -"
+  args:
+    warn: no
+  when: docker_add_repository_key|failed
+
+- name: Add Docker repository
+  apt_repository:
+    repo: "{{ docker_apt_repository }}"
+    state: present
+    update_cache: yes
+
+# Install Docker
+- name: Install Docker
+  package:
+    name: "{{ docker_package }}"
+    state: "{{ docker_package_state }}"
+
+- name: Ensure Docker is started and enabled at boot
+  service:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Ensure that the docker service is functional
+  docker_ping:
+  register: docker_result
+  retries: 5
+  delay: 10
+  until: docker_result|success
+  become: yes
+
+- name: Ensure docker group is present
+  group:
+    name: docker
+    state: present
+    system: yes
+
+- name: Add user to docker group
+  user:
+    name: "{{ ansible_env.USER }}"
+    groups: docker
+    append: yes
+
+# Docker Compose
+- name: Check current docker-compose version.
+  command: docker-compose --version
+  register: docker_compose_current_version
+  changed_when: false
+  failed_when: false
+
+- name: Delete existing docker-compose version if it's different.
+  file:
+    path: "{{ docker_compose_path }}"
+    state: absent
+  when: >
+    docker_compose_current_version.stdout is defined
+    and docker_compose_version not in docker_compose_current_version.stdout
+
+- name: Install Docker Compose (if configured).
+  get_url:
+    url: https://github.com/docker/compose/releases/download/{{ docker_compose_version }}/docker-compose-Linux-x86_64
+    dest: "{{ docker_compose_path }}"
+    mode: 0755
+
+# Docker indicator
+- name: Install Docker PIP module
+  pip:
+    name: docker
+    state: present
+    executable: /usr/bin/pip3
+
+- name: Add Docker indicator PPA repository
+  apt_repository:
+    repo: ppa:yktooo/ppa
+    state: present
+  when: docker_add_indicator
+
+- name: Install Docker indicator software package
+  apt:
+    name: indicator-docker
+    state: present
+  when: docker_add_indicator
+
+- name: Change default Docker indicator icon
+  get_url:
+    url: https://raw.githubusercontent.com/yktoo/indicator-docker/master/icons/ubuntu-mono-dark/indicator-docker.svg
+    dest: /usr/share/icons/hicolor/22x22/status/indicator-docker.svg
+    mode: 0644
+    force: yes
+  when: docker_add_indicator
+
+###
+
+- name: Installing apt-key
+  apt_key: id="F76221572C52609D" url=https://apt.dockerproject.org/gpg state=present
+
+- name: Add deb repository
+  apt_repository: repo='deb https://apt.dockerproject.org/repo ubuntu-{{ ansible_distribution_release }} main' state=present
+
+- name: Install
+  apt: pkg="{{ item }}" state=latest update_cache=yes
+  with_items:
+    - linux-image-extra-virtual
+    - docker-engine
+
+- name: Create Docker group
+  group: name=docker state=present
+
+- name: Add current user to Docker group
+  user: name="{{ ansible_env.USER }}" groups=docker append=yes
+
+- name: "Ensure Docker is {{ docker.start | ternary('started','stopped') }}"
+  service: name=docker state={{ docker.start | ternary('restarted','stopped') }} enabled={{ docker.service_enabled }}
+
+- name: Install docker-compose
+  get_url: url="https://github.com/docker/compose/releases/download/1.9.0/docker-compose-Linux-x86_64" dest=/usr/local/bin/docker-compose force=no mode=0755
